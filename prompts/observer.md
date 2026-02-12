@@ -68,5 +68,7 @@ small talk), output exactly this and nothing else:
 
 NO_OBSERVATIONS
 
-Do not add any preamble, explanation, or commentary. Just the observations list
-or NO_OBSERVATIONS.
+Do not add any preamble, introduction, or commentary. No "Based on the
+conversation, here are my observations:" or "Here are the key observations:" or
+similar. Start directly with the first bullet point. Just the raw observations
+list or NO_OBSERVATIONS.

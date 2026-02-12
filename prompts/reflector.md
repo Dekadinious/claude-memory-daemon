@@ -58,8 +58,9 @@ the event-based decision log structure.
 ## Output format
 
 Produce the consolidated observations.md content. Start with a level-1 header
-"# Observations" followed by grouped observations. No preamble or explanation —
-just the consolidated content ready to be written to the file.
+"# Observations" followed by grouped observations. No preamble, introduction, or
+commentary. No "Here is the consolidated version:" or similar. Start directly
+with `# Observations` — just the content ready to be written to the file.
 
 Target: reduce the input by 30-50% while losing zero actionable information. If
 the input is already lean, it's okay to return something close to the same
