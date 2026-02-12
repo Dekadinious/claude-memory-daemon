@@ -324,7 +324,7 @@ rm -rf /path/to/claude-memory-daemon
 
 ## Background
 
-Based on [Mastra's observational memory architecture](https://venturebeat.com/ai/observational-memory-cuts-ai-agent-costs-10x-and-outscores-rag-on-long-context-benchmarks/). Instead of RAG with vector databases, we compress conversation history into a dated observation log using two LLM passes (Observer + Reflector) and keep it in context. No retrieval needed.
+Based on [Mastra's observational memory architecture](https://venturebeat.com/data/observational-memory-cuts-ai-agent-costs-10x-and-outscores-rag-on-long). Instead of RAG with vector databases, we compress conversation history into a dated observation log using two LLM passes (Observer + Reflector) and keep it in context. No retrieval needed.
 
 ## License
 
