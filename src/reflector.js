@@ -34,12 +34,14 @@ export async function runReflector(projectPath) {
 
     const systemPrompt = fs.readFileSync(REFLECTOR_PROMPT_PATH, 'utf-8');
 
+    const wrappedInput = `<observations>\n${currentContent}\n</observations>\n\nConsolidate the observations above per your instructions. Output ONLY the file content — start with # Observations, end with the last bullet. No commentary.`;
+
     const result = execFileSync('claude', [
       '-p',
       '--system-prompt', systemPrompt,
       '--output-format', 'text',
     ], {
-      input: currentContent,
+      input: wrappedInput,
       encoding: 'utf-8',
       maxBuffer: 10 * 1024 * 1024,
       timeout: 600_000, // 10 min

@@ -25,28 +25,243 @@ export function parseConversationDelta(filePath, fromOffset = 0) {
   const raw = buf.toString('utf-8');
   const lines = raw.split('\n').filter(l => l.trim());
 
-  const parts = [];
-
+  // Parse all lines into objects
+  const entries = [];
   for (const line of lines) {
-    let obj;
     try {
-      obj = JSON.parse(line);
+      entries.push(JSON.parse(line));
     } catch {
-      // Skip malformed lines (partial writes from crashes)
       continue;
     }
-
-    const formatted = formatEntry(obj);
-    if (formatted.length > 0) {
-      parts.push(...formatted);
-    }
   }
+
+  // Format with error chain detection
+  const parts = formatWithChainDetection(entries);
 
   return {
     text: parts.join('\n'),
     newOffset: stat.size,
   };
 }
+
+/**
+ * Walk entries sequentially, detecting error chains and compressing them.
+ * Returns an array of formatted strings.
+ */
+function formatWithChainDetection(entries) {
+  const parts = [];
+  let i = 0;
+
+  while (i < entries.length) {
+    // Try to detect an error chain starting here
+    const chain = tryDetectChain(entries, i);
+
+    if (chain) {
+      if (chain.attempts.length === 1) {
+        // Single error: show the tool call + error marker, skip the error result entry
+        const attempt = chain.attempts[0];
+        for (const tu of attempt.toolUses) {
+          parts.push(`[Tool: ${tu.name}] ${tu.summary}`);
+        }
+        parts.push(`[Tool error: ${attempt.errorBrief}]`);
+      } else {
+        // Chain of 2+: compressed summary replaces all error pairs
+        parts.push(formatChainSummary(chain));
+      }
+      i = chain.endIndex;
+      continue;
+    }
+
+    // Normal formatting
+    const formatted = formatEntry(entries[i]);
+    if (formatted.length > 0) {
+      parts.push(...formatted);
+    }
+    i++;
+  }
+
+  return parts;
+}
+
+/**
+ * Try to detect an error chain starting at index i.
+ *
+ * A chain is 1+ consecutive (assistant-with-tool_use, user-with-error-tool_result) pairs
+ * for the same tool name. Text-only assistant messages between retries are skipped.
+ *
+ * Returns { attempts, endIndex } or null.
+ * endIndex points to the first entry AFTER the chain (the resolution or next unrelated entry).
+ */
+function tryDetectChain(entries, startIndex) {
+  const firstToolUses = getToolUses(entries[startIndex]);
+  if (!firstToolUses) return null;
+
+  const chainToolName = firstToolUses[0].name;
+
+  // Detect parallel calls via message.id — JSONL splits parallel calls into
+  // separate entries, but they share the same message.id from the API response.
+  // Sequential retries have different message.ids.
+  const firstMessageId = entries[startIndex].message?.id;
+
+  // Next entry must be an all-error tool result
+  const firstErrors = getErrorResults(entries[startIndex + 1]);
+  if (!firstErrors) return null;
+
+  const attempts = [{
+    toolUses: firstToolUses,
+    errors: firstErrors,
+    errorBrief: classifyError(firstErrors),
+  }];
+  let i = startIndex + 2;
+
+  while (i < entries.length) {
+    // Skip text-only assistant messages between retries ("I need permission...")
+    if (isTextOnlyMessage(entries[i])) {
+      i++;
+      continue;
+    }
+
+    const toolUses = getToolUses(entries[i]);
+    if (!toolUses) break;
+
+    // Parallel calls from the same API message share message.id — not retries.
+    const msgId = entries[i].message?.id;
+    if (msgId && firstMessageId && msgId === firstMessageId) break;
+
+    if (toolUses[0].name !== chainToolName) break;
+
+    const errors = getErrorResults(entries[i + 1]);
+    if (errors) {
+      attempts.push({
+        toolUses: toolUses,
+        errors: errors,
+        errorBrief: classifyError(errors),
+      });
+      i += 2;
+      continue;
+    }
+
+    // Not an error — chain ends. This entry (the successful retry) will format normally.
+    break;
+  }
+
+  return { attempts, endIndex: i };
+}
+
+/**
+ * Format a chain of 2+ errors into a compressed summary.
+ */
+function formatChainSummary(chain) {
+  const { attempts } = chain;
+  const count = attempts.length;
+  const toolName = attempts[0].toolUses[0].name;
+
+  // Check if all attempts used identical inputs
+  const inputSigs = attempts.map(a => a.toolUses.map(t => t.summary).join(', '));
+  const allIdentical = inputSigs.every(s => s === inputSigs[0]);
+
+  // Check if all errors are the same type
+  const errorBriefs = attempts.map(a => a.errorBrief);
+  const sameError = errorBriefs.every(e => e === errorBriefs[0]);
+
+  let summary = `[Retry chain: ${toolName} x${count} failed`;
+
+  // Check what follows the chain (peek at the context from the last attempt)
+  summary += ']';
+
+  if (allIdentical) {
+    // Blind retry — same input, same error
+    summary += `\n  Input: ${inputSigs[0]}`;
+    summary += `\n  Error: ${errorBriefs[0]}`;
+  } else {
+    // Adaptive retry — inputs changed
+    summary += `\n  First: ${inputSigs[0]}`;
+    summary += `\n  Last: ${inputSigs[count - 1]}`;
+    if (sameError) {
+      summary += `\n  Error: ${errorBriefs[0]}`;
+    } else {
+      summary += `\n  Last error: ${errorBriefs[count - 1]}`;
+    }
+  }
+
+  return summary;
+}
+
+// ---- Helpers for chain detection ----
+
+/**
+ * Extract tool_use info from an assistant entry. Returns array or null.
+ */
+function getToolUses(entry) {
+  if (!entry || entry.type !== 'assistant') return null;
+  const content = entry.message?.content;
+  if (!Array.isArray(content)) return null;
+
+  const toolUses = content
+    .filter(b => b.type === 'tool_use')
+    .map(b => ({
+      name: b.name || 'unknown',
+      input: b.input || {},
+      summary: summarizeToolInput(b.name || 'unknown', b.input || {}),
+    }));
+
+  return toolUses.length > 0 ? toolUses : null;
+}
+
+/**
+ * Extract error results from a user entry.
+ * Returns array of error texts, or null if the entry isn't all-errors.
+ */
+function getErrorResults(entry) {
+  if (!entry) return null;
+  if (entry.type !== 'user' && entry.type !== 'human') return null;
+  const content = entry.message?.content;
+  if (!Array.isArray(content)) return null;
+
+  const toolResults = content.filter(b => b.type === 'tool_result');
+  if (toolResults.length === 0) return null;
+
+  const errors = toolResults.filter(b => b.is_error);
+  // Only count if ALL results are errors (don't break partial-success messages)
+  if (errors.length !== toolResults.length) return null;
+
+  const errorTexts = errors.map(e => {
+    const text = typeof e.content === 'string'
+      ? e.content
+      : Array.isArray(e.content)
+        ? e.content.filter(b => b.type === 'text').map(b => b.text).join('\n')
+        : '';
+    return text;
+  });
+
+  return errorTexts;
+}
+
+/**
+ * Check if an entry is a text-only assistant message (no tool calls).
+ */
+function isTextOnlyMessage(entry) {
+  if (!entry || entry.type !== 'assistant') return false;
+  const content = entry.message?.content;
+  if (!Array.isArray(content)) return typeof content === 'string';
+  return content.every(b => b.type === 'text' || b.type === 'thinking');
+}
+
+/**
+ * Classify errors into a brief description for the chain summary.
+ */
+function classifyError(errorTexts) {
+  const combined = errorTexts.join(' ').toLowerCase();
+  if (/permission/.test(combined)) return 'permission denied';
+  if (/doesn.t want to proceed/.test(combined)) return 'user rejected';
+  if (/timeout/.test(combined)) return 'timeout';
+  // Extract first meaningful line from the error
+  const firstError = errorTexts[0] || '';
+  const firstLine = firstError.split('\n').find(l => l.trim()) || firstError;
+  return truncateText(firstLine, 120);
+}
+
+// ---- Original formatting (unchanged for non-chain entries) ----
 
 /**
  * Format a top-level JSONL entry into human-readable lines.
@@ -61,18 +276,18 @@ function formatEntry(obj) {
     const content = msg.content;
 
     if (typeof content === 'string') {
-      // Skip meta/command messages that aren't real user input
       if (!obj.isMeta) {
         results.push(`[User]: ${content}`);
       }
     } else if (Array.isArray(content)) {
-      // User messages can contain tool_result blocks and text blocks
       for (const block of content) {
         if (block.type === 'text' && block.text) {
           if (!obj.isMeta) {
             results.push(`[User]: ${block.text}`);
           }
         } else if (block.type === 'tool_result') {
+          // Errors are handled by chain detection — skip here
+          if (block.is_error) continue;
           const resultContent = typeof block.content === 'string'
             ? block.content
             : (Array.isArray(block.content)
@@ -102,12 +317,10 @@ function formatEntry(obj) {
           const summary = summarizeToolInput(name, input);
           results.push(`[Tool: ${name}] ${summary}`);
         }
-        // Skip 'thinking' blocks — internal reasoning, not useful for observations
       }
     }
   }
 
-  // Skip system, summary, progress, file-history-snapshot, queue-operation types
   return results;
 }
 
@@ -143,7 +356,6 @@ function summarizeToolInput(toolName, input) {
     return `query: ${input.query || '?'}`;
   }
 
-  // Generic fallback
   const keys = Object.keys(input);
   if (keys.length === 0) return '';
   const first = input[keys[0]];

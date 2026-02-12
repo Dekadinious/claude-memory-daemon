@@ -18,13 +18,15 @@ export function runObserver(conversationText) {
 
   const systemPrompt = fs.readFileSync(OBSERVER_PROMPT_PATH, 'utf-8');
 
+  const wrappedInput = `<conversation>\n${conversationText}\n</conversation>\n\nAnalyze the conversation above and produce observations per your instructions.`;
+
   try {
     const result = execFileSync('claude', [
       '-p',
       '--system-prompt', systemPrompt,
       '--output-format', 'text',
     ], {
-      input: conversationText,
+      input: wrappedInput,
       encoding: 'utf-8',
       maxBuffer: 10 * 1024 * 1024, // 10MB
       timeout: 600_000, // 10 min
@@ -32,7 +34,7 @@ export function runObserver(conversationText) {
 
     const output = result.trim();
 
-    if (output === 'NO_OBSERVATIONS') {
+    if (output === 'NO_OBSERVATIONS' || output.includes('NO_OBSERVATIONS')) {
       return null;
     }
 

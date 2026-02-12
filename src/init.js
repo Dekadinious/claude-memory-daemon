@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import config from './config.js';
+import { loadState, saveState, updateFileOffset } from './state.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -46,6 +47,10 @@ export function initProject(projectPath, opts = {}) {
 
   // 6. Add CLAUDE.md section
   addClaudeMdSection(projectPath);
+
+  // 7. Seed state with existing conversations so daemon only watches for NEW content
+  const claudeProjectDir = projectPath.replace(/\//g, '-').replace(/^-/, '-');
+  seedExistingState(projectPath, claudeProjectDir, opts.noCatchup);
 
   console.log('\nDone! Start the daemon with: claude-memory start');
 }
@@ -108,6 +113,64 @@ function mergeSettings(claudeDir) {
   }
 
   fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+}
+
+/**
+ * Seed state with existing JSONL files at their current size.
+ *
+ * Normal init (noCatchup=false): seeds all EXCEPT the 10 newest by mtime,
+ *   so catchup processes the 10 most recent conversations on first start.
+ * Skip-history init (noCatchup=true): seeds ALL files, so nothing gets
+ *   caught up — daemon only watches for brand new content.
+ */
+function seedExistingState(projectPath, claudeProjectDir, noCatchup = false) {
+  const claudeDir = path.join(config.CLAUDE_PROJECTS_DIR, claudeProjectDir);
+
+  if (!fs.existsSync(claudeDir)) {
+    console.log('  ✓ No existing conversations to seed (Claude project dir not found yet)');
+    return;
+  }
+
+  const state = loadState(projectPath);
+
+  // If state already has files tracked, don't re-seed (project was already initialized)
+  if (Object.keys(state.files).length > 0) {
+    console.log('  ✓ State already has tracked files, skipping seed');
+    return;
+  }
+
+  let files;
+  try {
+    files = fs.readdirSync(claudeDir)
+      .filter(f => f.endsWith('.jsonl'))
+      .map(f => ({
+        name: f,
+        stat: fs.statSync(path.join(claudeDir, f)),
+      }))
+      .sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs);
+  } catch (err) {
+    console.warn(`  ⚠ Could not seed state: ${err.message}`);
+    return;
+  }
+
+  // For normal init, leave the 10 newest unseeded so catchup processes them
+  const toSeed = noCatchup ? files : files.slice(config.MAX_CATCHUP_FILES);
+
+  for (const file of toSeed) {
+    updateFileOffset(state, file.name, file.stat.size, 0);
+  }
+
+  if (toSeed.length > 0) {
+    saveState(projectPath, state);
+    const kept = files.length - toSeed.length;
+    if (noCatchup) {
+      console.log(`  ✓ Seeded state for ${toSeed.length} conversations (skip-history: no catchup)`);
+    } else {
+      console.log(`  ✓ Seeded state for ${toSeed.length} conversations (${kept} newest left for catchup)`);
+    }
+  } else {
+    console.log(`  ✓ ${files.length} conversations found, all left for catchup`);
+  }
 }
 
 function addClaudeMdSection(projectPath) {

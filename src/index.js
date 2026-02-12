@@ -6,10 +6,13 @@ import { execSync, spawn } from 'child_process';
 import config from './config.js';
 import { startWatching } from './watcher.js';
 import { initProject } from './init.js';
-import { loadState } from './state.js';
+import { loadState, saveState, updateFileOffset } from './state.js';
 
 const args = process.argv.slice(2);
 const command = args[0];
+
+// Package root directory (where the git repo lives)
+const PACKAGE_DIR = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
 
 // Ensure claude CLI is available
 function checkClaude() {
@@ -114,6 +117,25 @@ function killAllDaemons() {
     }
   }
   try { fs.unlinkSync(config.PID_FILE); } catch {}
+}
+
+/**
+ * Check if there are updates available on the remote.
+ * Returns { behind: number, current: string, remote: string } or null on error.
+ */
+function checkForUpdates() {
+  try {
+    execSync('git fetch --quiet', { cwd: PACKAGE_DIR, stdio: 'pipe', timeout: 10_000 });
+    const local = execSync('git rev-parse HEAD', { cwd: PACKAGE_DIR, encoding: 'utf-8', stdio: 'pipe' }).trim();
+    const remote = execSync('git rev-parse @{u}', { cwd: PACKAGE_DIR, encoding: 'utf-8', stdio: 'pipe' }).trim();
+    if (local === remote) return { behind: 0, current: local.slice(0, 7), remote: remote.slice(0, 7) };
+    const behind = parseInt(
+      execSync(`git rev-list --count HEAD..@{u}`, { cwd: PACKAGE_DIR, encoding: 'utf-8', stdio: 'pipe' }).trim()
+    );
+    return { behind, current: local.slice(0, 7), remote: remote.slice(0, 7) };
+  } catch {
+    return null;
+  }
 }
 
 function daemonMain() {
@@ -265,6 +287,13 @@ switch (command) {
         console.log(`    Observations: ${(obsSize / 1024).toFixed(1)}KB (~${Math.round(obsSize / 4)} tokens)`);
       }
     }
+
+    // Update check (non-blocking, silent on error)
+    const updateInfo = checkForUpdates();
+    if (updateInfo && updateInfo.behind > 0) {
+      console.log(`\nUpdate available: ${updateInfo.behind} new commit(s) (${updateInfo.current} → ${updateInfo.remote})`);
+      console.log('Run: claude-memory update');
+    }
     break;
   }
 
@@ -366,6 +395,112 @@ switch (command) {
     break;
   }
 
+  case 'update': {
+    console.log(`Package directory: ${PACKAGE_DIR}`);
+    const info = checkForUpdates();
+    if (!info) {
+      console.error('Failed to check for updates (no git remote or network issue).');
+      process.exit(1);
+    }
+    if (info.behind === 0) {
+      console.log(`Already up to date (${info.current}).`);
+      process.exit(0);
+    }
+    console.log(`${info.behind} new commit(s) available (${info.current} → ${info.remote}).`);
+    console.log('Pulling...');
+    try {
+      execSync('git pull --ff-only', { cwd: PACKAGE_DIR, stdio: 'inherit', timeout: 30_000 });
+    } catch (err) {
+      console.error('git pull failed:', err.message);
+      console.error('You may need to resolve conflicts manually.');
+      process.exit(1);
+    }
+
+    // Reinstall dependencies if package.json changed
+    try {
+      const diff = execSync(`git diff HEAD~${info.behind} --name-only`, { cwd: PACKAGE_DIR, encoding: 'utf-8', stdio: 'pipe' });
+      if (diff.includes('package.json') || diff.includes('package-lock.json')) {
+        console.log('Dependencies changed, running npm install...');
+        execSync('npm install', { cwd: PACKAGE_DIR, stdio: 'inherit' });
+      }
+    } catch {}
+
+    // Restart daemon if running
+    const svcStatus = serviceStatus();
+    if (svcStatus === 'active') {
+      console.log('Restarting daemon...');
+      try {
+        execSync('systemctl --user restart claude-memory', { stdio: 'inherit' });
+        console.log('Daemon restarted.');
+      } catch (err) {
+        console.error('Failed to restart daemon:', err.message);
+      }
+    } else {
+      const pid = isRunning();
+      if (pid) {
+        console.log('Restarting daemon...');
+        process.kill(pid, 'SIGTERM');
+        setTimeout(() => {
+          const child = spawn(process.execPath, [path.resolve(new URL(import.meta.url).pathname), '_daemon'], {
+            detached: true,
+            stdio: ['ignore', fs.openSync(config.LOG_FILE, 'a'), fs.openSync(config.LOG_FILE, 'a')],
+          });
+          child.unref();
+          console.log('Daemon restarted.');
+        }, 1000);
+      }
+    }
+
+    console.log('Update complete.');
+    break;
+  }
+
+  case 'seal': {
+    // Mark all untracked conversation files as "already read" for a project.
+    // Use this when a project has already been initialized but you don't want
+    // the daemon catching up on remaining historical conversations.
+    const target = args[1] ? path.resolve(args[1]) : path.resolve(process.cwd());
+
+    let data = { projects: [] };
+    try { data = JSON.parse(fs.readFileSync(config.PROJECTS_FILE, 'utf-8')); } catch {}
+
+    const project = data.projects.find(p => p.path === target);
+    if (!project) {
+      console.error(`Project not registered: ${target}`);
+      console.error('Run "claude-memory init" first.');
+      process.exit(1);
+    }
+
+    const claudeDir = path.join(config.CLAUDE_PROJECTS_DIR, project.claudeProjectDir);
+    if (!fs.existsSync(claudeDir)) {
+      console.error(`Claude project dir not found: ${claudeDir}`);
+      process.exit(1);
+    }
+
+    const state = loadState(project.path);
+    let sealed = 0;
+
+    const files = fs.readdirSync(claudeDir).filter(f => f.endsWith('.jsonl'));
+    for (const file of files) {
+      const filePath = path.join(claudeDir, file);
+      const stat = fs.statSync(filePath);
+      const currentOffset = state.files[file]?.offset || 0;
+      if (stat.size > currentOffset) {
+        updateFileOffset(state, file, stat.size, 0);
+        sealed++;
+      }
+    }
+
+    if (sealed > 0) {
+      saveState(project.path, state);
+      console.log(`Sealed ${sealed} unprocessed conversation(s) for: ${target}`);
+      console.log('Daemon will now only process new content written after this point.');
+    } else {
+      console.log('All conversations already tracked. Nothing to seal.');
+    }
+    break;
+  }
+
   case 'install-service': {
     const serviceDir = path.join(process.env.HOME, '.config', 'systemd', 'user');
     fs.mkdirSync(serviceDir, { recursive: true });
@@ -416,12 +551,14 @@ Commands:
   status                   Show daemon status and project info
   list                     List registered projects
   remove [path]            Unregister a project
+  seal [path]              Mark all untracked conversations as read (stop catchup)
   config [get|set]         View or change project settings
     config                   Show current project config
     config set <key> <val>   Change a setting
     --project <path>         Target a specific project (default: cwd)
     Keys: reflector-threshold
   logs                     Tail daemon logs
+  update                   Pull latest code from git and restart daemon
   install-service          Set up systemd user service (auto-start)
 `);
     break;
