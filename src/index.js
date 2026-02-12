@@ -43,6 +43,79 @@ function isRunning() {
   }
 }
 
+/**
+ * Find all daemon processes via pgrep (catches strays not tracked by PID file).
+ * Returns array of PIDs, excluding the current process.
+ */
+function findAllDaemons() {
+  try {
+    const output = execSync('pgrep -f "claude-memory-daemon.*_daemon"', {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    return output.trim().split('\n')
+      .map(p => parseInt(p.trim()))
+      .filter(p => !isNaN(p) && p !== process.pid);
+  } catch {
+    return []; // No matches
+  }
+}
+
+/**
+ * Kill all existing daemon processes and clean up PID file.
+ * Used on startup to guarantee a single instance.
+ */
+/**
+ * Check if the systemd user service is installed and what state it's in.
+ * Returns 'active', 'inactive', 'failed', etc., or null if the service
+ * unit is not installed (or systemd is not available).
+ */
+function serviceStatus() {
+  try {
+    // LoadState always exits 0 — returns 'loaded' or 'not-found'
+    const loadState = execSync(
+      'systemctl --user show claude-memory.service --property=LoadState --value',
+      { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
+    ).trim();
+
+    if (loadState !== 'loaded') {
+      return null; // Unit file does not exist
+    }
+
+    // ActiveState also always exits 0
+    const activeState = execSync(
+      'systemctl --user show claude-memory.service --property=ActiveState --value',
+      { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
+    ).trim();
+
+    return activeState; // 'active', 'inactive', 'failed', etc.
+  } catch {
+    return null; // systemctl not available (non-systemd system)
+  }
+}
+
+function killAllDaemons() {
+  const pids = findAllDaemons();
+  if (pids.length > 0) {
+    // SIGTERM first, then verify and SIGKILL any survivors
+    for (const pid of pids) {
+      try { process.kill(pid, 'SIGTERM'); } catch {}
+    }
+    // Brief wait for graceful shutdown
+    try { execSync('sleep 0.5', { stdio: 'pipe' }); } catch {}
+    for (const pid of pids) {
+      try {
+        process.kill(pid, 0); // Still alive?
+        process.kill(pid, 'SIGKILL');
+        console.log(`Force-killed stale daemon (PID: ${pid})`);
+      } catch {
+        console.log(`Killed stale daemon (PID: ${pid})`);
+      }
+    }
+  }
+  try { fs.unlinkSync(config.PID_FILE); } catch {}
+}
+
 function daemonMain() {
   // Verify claude CLI is available (needed for Observer/Reflector passes)
   checkClaude();
@@ -94,12 +167,28 @@ function daemonMain() {
 switch (command) {
   case 'start': {
     checkClaude();
-    const pid = isRunning();
-    if (pid) {
-      console.log(`Daemon is already running (PID: ${pid}).`);
+
+    // If systemd service is installed, always use that (avoids fighting with systemd)
+    const svcStatus = serviceStatus();
+    if (svcStatus !== null) {
+      if (svcStatus === 'active') {
+        console.log('Daemon is already running via systemd service.');
+        process.exit(0);
+      }
+      try {
+        execSync('systemctl --user restart claude-memory', { stdio: 'inherit' });
+        console.log('Daemon started via systemd service.');
+      } catch (err) {
+        console.error('Failed to start systemd service:', err.message);
+        console.log('Try: systemctl --user status claude-memory');
+      }
       process.exit(0);
     }
 
+    // No systemd service — manual mode: kill strays and spawn
+    killAllDaemons();
+
+    fs.mkdirSync(config.DAEMON_DIR, { recursive: true });
     const logStream = fs.openSync(config.LOG_FILE, 'a');
     const child = spawn(process.execPath, [path.resolve(new URL(import.meta.url).pathname), '_daemon'], {
       detached: true,
@@ -128,6 +217,17 @@ switch (command) {
   }
 
   case 'stop': {
+    const svcStatus = serviceStatus();
+    if (svcStatus === 'active') {
+      try {
+        execSync('systemctl --user stop claude-memory', { stdio: 'inherit' });
+        console.log('Daemon stopped (systemd service).');
+      } catch (err) {
+        console.error('Failed to stop systemd service:', err.message);
+      }
+      break;
+    }
+
     const pid = isRunning();
     if (!pid) {
       console.log('Daemon is not running.');
@@ -139,8 +239,11 @@ switch (command) {
   }
 
   case 'status': {
+    const svcStatus = serviceStatus();
     const pid = isRunning();
-    if (pid) {
+    if (svcStatus === 'active') {
+      console.log(`Daemon: running via systemd`);
+    } else if (pid) {
       console.log(`Daemon: running (PID: ${pid})`);
     } else {
       console.log('Daemon: not running');
