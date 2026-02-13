@@ -60,9 +60,11 @@ function watchProject(project) {
     }
 
     // Then start watching for new changes
-    const watcher = chokidar.watch(path.join(claudeDir, '*.jsonl'), {
+    // Note: chokidar 4.x dropped glob support, so watch the directory and filter
+    const watcher = chokidar.watch(claudeDir, {
       persistent: true,
       ignoreInitial: true,
+      depth: 0,
       awaitWriteFinish: {
         stabilityThreshold: 2000,
         pollInterval: 500,
@@ -70,11 +72,11 @@ function watchProject(project) {
     });
 
     watcher.on('change', (filePath) => {
-      debounceFile(filePath, project);
+      if (filePath.endsWith('.jsonl')) debounceFile(filePath, project);
     });
 
     watcher.on('add', (filePath) => {
-      debounceFile(filePath, project);
+      if (filePath.endsWith('.jsonl')) debounceFile(filePath, project);
     });
 
     activeWatchers.set(project.path, watcher);
