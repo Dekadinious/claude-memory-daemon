@@ -100,15 +100,21 @@ function mergeSettings(claudeDir) {
     settings.hooks.SessionStart = [];
   }
 
-  // Check if our hook is already configured
+  // Check if our hook is already configured (check both old and new format)
   const existing = settings.hooks.SessionStart.find(
-    h => h.command && h.command.includes('session-start.sh')
+    h => (h.command && h.command.includes('session-start.sh')) ||
+         (h.hooks && h.hooks.some(hk => hk.command && hk.command.includes('session-start.sh')))
   );
 
   if (!existing) {
     settings.hooks.SessionStart.push({
       matcher: 'startup|resume|clear|compact',
-      command: '.claude/hooks/session-start.sh',
+      hooks: [
+        {
+          type: 'command',
+          command: '.claude/hooks/session-start.sh',
+        },
+      ],
     });
   }
 
