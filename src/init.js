@@ -184,9 +184,10 @@ function addClaudeMdSection(projectPath) {
   const section = `
 ## Observational Memory
 
-This project uses observational memory. At the start of each session, you
-receive an OBSERVATIONS.md file containing compressed knowledge from previous
-sessions. These observations include:
+This project uses observational memory. At the start of each session, the
+contents of OBSERVATIONS.md are automatically injected into your context via a
+SessionStart hook. Do NOT read the file yourself — the observations are already
+in your context above. They contain:
 
 - Architectural decisions and their reasoning
 - File locations (especially non-obvious ones)
