@@ -8,6 +8,21 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REFLECTOR_PROMPT_PATH = path.join(__dirname, '..', 'prompts', 'reflector.md');
 
 /**
+ * Extract content between XML tags, falling back to raw text if tags are missing.
+ */
+function extractTagContent(text, tagName) {
+  const openTag = `<${tagName}>`;
+  const closeTag = `</${tagName}>`;
+  const openIdx = text.indexOf(openTag);
+  const closeIdx = text.lastIndexOf(closeTag);
+  if (openIdx !== -1 && closeIdx !== -1 && closeIdx > openIdx) {
+    return text.slice(openIdx + openTag.length, closeIdx).trim();
+  }
+  // Fallback: no tags found, return raw text
+  return text;
+}
+
+/**
  * Run the Reflector pass to consolidate observations.md.
  * Uses file locking to prevent concurrent Observer appends.
  */
@@ -34,7 +49,7 @@ export async function runReflector(projectPath) {
 
     const systemPrompt = fs.readFileSync(REFLECTOR_PROMPT_PATH, 'utf-8');
 
-    const wrappedInput = `<observations>\n${currentContent}\n</observations>\n\nConsolidate the observations above per your instructions. Output ONLY the file content — start with # Observations, end with the last bullet. No commentary.`;
+    const wrappedInput = `<observations>\n${currentContent}\n</observations>\n\nConsolidate the observations above per your instructions. Wrap your output in <observation_file_contents> tags.`;
 
     const result = execFileSync('claude', [
       '-p',
@@ -47,7 +62,7 @@ export async function runReflector(projectPath) {
       timeout: 600_000, // 10 min
     });
 
-    const consolidated = result.trim();
+    const consolidated = extractTagContent(result.trim(), 'observation_file_contents');
 
     if (!consolidated || consolidated.length < 50) {
       console.error('[Reflector] Output too short, keeping original.');

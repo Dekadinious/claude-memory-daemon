@@ -88,7 +88,10 @@ Over time, if observations grow too large, a **Reflector** pass consolidates the
 | `claude-memory remove [path]` | Unregister a project (keeps observations) |
 | `claude-memory config` | Show project config |
 | `claude-memory config set <key> <val>` | Change a setting |
+| `claude-memory seal [path]` | Mark all untracked conversations as read |
+| `claude-memory reflect [path]` | Manually run reflector consolidation pass |
 | `claude-memory logs` | Tail daemon logs |
+| `claude-memory update` | Pull latest code from git and restart daemon |
 | `claude-memory install-service` | Auto-start on login (systemd, Linux only) |
 
 ### Config options

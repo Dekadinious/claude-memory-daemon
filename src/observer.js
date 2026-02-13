@@ -8,6 +8,20 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const OBSERVER_PROMPT_PATH = path.join(__dirname, '..', 'prompts', 'observer.md');
 
 /**
+ * Extract content between XML tags, falling back to raw text if tags are missing.
+ */
+function extractTagContent(text, tagName) {
+  const openTag = `<${tagName}>`;
+  const closeTag = `</${tagName}>`;
+  const openIdx = text.indexOf(openTag);
+  const closeIdx = text.lastIndexOf(closeTag);
+  if (openIdx !== -1 && closeIdx !== -1 && closeIdx > openIdx) {
+    return text.slice(openIdx + openTag.length, closeIdx).trim();
+  }
+  return text;
+}
+
+/**
  * Run the Observer pass on a conversation delta.
  * Returns the observations text, or null if NO_OBSERVATIONS.
  */
@@ -18,7 +32,7 @@ export function runObserver(conversationText) {
 
   const systemPrompt = fs.readFileSync(OBSERVER_PROMPT_PATH, 'utf-8');
 
-  const wrappedInput = `<conversation>\n${conversationText}\n</conversation>\n\nAnalyze the conversation above and produce observations per your instructions.`;
+  const wrappedInput = `<conversation>\n${conversationText}\n</conversation>\n\nAnalyze the conversation above and produce observations per your instructions. Wrap any observations in <observation_file_contents> tags.`;
 
   try {
     const result = execFileSync('claude', [
@@ -38,7 +52,7 @@ export function runObserver(conversationText) {
       return null;
     }
 
-    return output;
+    return extractTagContent(output, 'observation_file_contents');
   } catch (err) {
     console.error('[Observer] claude -p failed:', err.message);
     return null;

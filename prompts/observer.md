@@ -119,9 +119,15 @@ Your ENTIRE output must be one of two things:
 
 1. The exact string `NO_OBSERVATIONS` (if nothing worth remembering)
 
-2. A list of `- ` bullets and NOTHING ELSE. The very first character of your
-   output must be `-`. No title, no headers, no "Here are my observations:",
-   no thinking, no analysis, no explanation. Just bullets.
+2. Observations wrapped in `<observation_file_contents>` tags containing ONLY
+   `- ` bullets. Nothing else inside the tags — no title, no headers, no
+   "Here are my observations:", no thinking, no analysis. Just bullets.
+
+Example:
+<observation_file_contents>
+- First observation here
+- Second observation here
+</observation_file_contents>
 
 - Each observation: 1-2 sentences, specific, self-contained
 - Aim for 3-7 observations max. Less is better. Quality over quantity.

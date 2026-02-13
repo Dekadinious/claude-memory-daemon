@@ -44,7 +44,21 @@ function watchProject(project) {
     ? Promise.resolve((() => { console.log(`[Catchup] ${project.path}: skipped (--no-catchup)`); })())
     : catchupProject(project);
 
-  catchupDone.then(() => {
+  catchupDone.then(async () => {
+    // Check if reflector is needed after catchup
+    const threshold = project.reflectorThreshold || config.DEFAULT_REFLECTOR_THRESHOLD;
+    if (exceedsThreshold(project.path, threshold)) {
+      console.log(`[Reflector] Threshold exceeded after catchup, consolidating...`);
+      const reflected = await runReflector(project.path);
+      if (reflected) {
+        const state = loadState(project.path);
+        state.totalReflectorPasses++;
+        state.lastReflection = new Date().toISOString();
+        saveState(project.path, state);
+        autoCommitObservations(project.path);
+      }
+    }
+
     // Then start watching for new changes
     const watcher = chokidar.watch(path.join(claudeDir, '*.jsonl'), {
       persistent: true,

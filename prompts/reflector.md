@@ -32,6 +32,11 @@ If YES → delete it. No exceptions. Common failures:
   unless there's a non-obvious lesson (not "permission was denied").
 - **Data format descriptions**: "API returns XML", "HTML uses nested tables"
   → DELETE. Read the code or API.
+- **Code behavior phrased as gotchas**: "Component X is URL-based", "useEditor
+  hook captures closure", "Service Y uses singleton pattern" → DELETE. These
+  describe how code works using cautionary language. A future Claude will see
+  the pattern when reading the code. Only keep if the behavior is genuinely
+  surprising AND caused real debugging pain — not just "here's how it works."
 
 If NO → keep it. These survive:
 
@@ -90,14 +95,25 @@ Remove ALL of the following on sight:
 
 ## Output format
 
-Your ENTIRE output is written directly to a file. It must be ONLY the
-consolidated observations — nothing else. No meta-commentary about what you
-changed, no summary of deletions, no "Here is the consolidated version:", no
-changelog, no thinking. Your output IS the file.
+Wrap your ENTIRE output in `<observation_file_contents>` tags. Everything inside
+the tags is written directly to a file — nothing else is kept.
 
-The very first characters must be `# Observations`. The very last character
-must be the end of the last observation bullet. Nothing before, nothing after.
+Inside the tags: ONLY the consolidated observations. No meta-commentary about
+what you changed, no summary of deletions, no changelog, no thinking.
+
+The first line inside the tags must be `# Observations`. The last line must be
+the end of the last observation bullet. Nothing before, nothing after.
 
 Produce grouped observations under level-2 headers. Target: reduce the input by
 30-50% while losing zero actionable information. If the input is already lean,
 it's okay to return something close to the same length.
+
+Example structure:
+<observation_file_contents>
+# Observations
+
+## Section Name
+
+- Observation one
+- Observation two
+</observation_file_contents>

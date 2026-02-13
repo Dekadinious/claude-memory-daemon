@@ -501,6 +501,40 @@ switch (command) {
     break;
   }
 
+  case 'reflect': {
+    const target = args[1] ? path.resolve(args[1]) : path.resolve(process.cwd());
+
+    let data = { projects: [] };
+    try { data = JSON.parse(fs.readFileSync(config.PROJECTS_FILE, 'utf-8')); } catch {}
+
+    const project = data.projects.find(p => p.path === target);
+    if (!project) {
+      console.error(`Project not registered: ${target}`);
+      process.exit(1);
+    }
+
+    const obsPath = path.join(target, config.OBSERVATIONS_FILE);
+    if (!fs.existsSync(obsPath)) {
+      console.error('No OBSERVATIONS.md found.');
+      process.exit(1);
+    }
+
+    const { runReflector } = await import('./reflector.js');
+    console.log('Running reflector...');
+    const result = await runReflector(target);
+    if (result) {
+      const { loadState: ls, saveState: ss } = await import('./state.js');
+      const state = ls(target);
+      state.totalReflectorPasses++;
+      state.lastReflection = new Date().toISOString();
+      ss(target, state);
+      console.log('Reflector pass complete.');
+    } else {
+      console.log('Reflector returned no result (output too short or empty).');
+    }
+    break;
+  }
+
   case 'install-service': {
     const serviceDir = path.join(process.env.HOME, '.config', 'systemd', 'user');
     fs.mkdirSync(serviceDir, { recursive: true });
@@ -557,6 +591,7 @@ Commands:
     config set <key> <val>   Change a setting
     --project <path>         Target a specific project (default: cwd)
     Keys: reflector-threshold
+  reflect [path]           Manually run reflector consolidation pass
   logs                     Tail daemon logs
   update                   Pull latest code from git and restart daemon
   install-service          Set up systemd user service (auto-start)
