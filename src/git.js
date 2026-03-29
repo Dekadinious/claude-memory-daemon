@@ -30,7 +30,7 @@ export function autoCommitObservations(projectPath) {
   }
 
   try {
-    execSync(`git add "${config.OBSERVATIONS_FILE}" && git commit -m "chore: update observational memory" --no-verify`, {
+    execSync(`git add "${config.OBSERVATIONS_FILE}" && git commit -m "chore: update observational memory" --no-verify -- "${config.OBSERVATIONS_FILE}"`, {
       cwd: projectPath,
       stdio: 'pipe',
     });
